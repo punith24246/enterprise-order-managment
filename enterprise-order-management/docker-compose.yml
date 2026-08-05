@@ -1,0 +1,69 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: enterprise_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  auth-service:
+    build: ./auth-service
+    ports:
+      - "8001:8000"
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/enterprise_db
+      JWT_SECRET: supersecretkey_change_me
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  inventory-service:
+    build: ./inventory-service
+    ports:
+      - "8002:8000"
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/enterprise_db
+      JWT_SECRET: supersecretkey_change_me
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  order-service:
+    build: ./order-service
+    ports:
+      - "8003:8000"
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/enterprise_db
+      JWT_SECRET: supersecretkey_change_me
+      INVENTORY_SERVICE_URL: http://inventory-service:8000
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  gateway:
+    build: ./gateway
+    ports:
+      - "8000:8000"
+    environment:
+      JWT_SECRET: supersecretkey_change_me
+      AUTH_SERVICE_URL: http://auth-service:8000
+      INVENTORY_SERVICE_URL: http://inventory-service:8000
+      ORDER_SERVICE_URL: http://order-service:8000
+    depends_on:
+      - auth-service
+      - inventory-service
+      - order-service
+
+volumes:
+  pgdata:
