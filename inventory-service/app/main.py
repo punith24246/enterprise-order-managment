@@ -1,20 +1,20 @@
-from fastapi import FastAPI, Depends, HTTPException, status
+from contextlib import asynccontextmanager
+
+from fastapi import Depends, FastAPI, HTTPException, status
+from sqlalchemy import text
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from . import models, schemas
-from .database import engine, get_db, Base
-from .deps import get_current_user, require_admin
+from .database import Base, engine, get_db
+from .deps import get_current_user, require_admin, require_service_token
 from .logging_middleware import CorrelationLoggingMiddleware
-
-from contextlib import asynccontextmanager
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Deliberately not run at import time: importing app.main (e.g. in tests,
-    # which override get_db with an in-memory SQLite session) shouldn't force
-    # a connection to the real Postgres instance. Uvicorn triggers this
-    # lifespan normally in docker-compose / production.
+    # Tests import the app with an overridden database, so real database setup
+    # happens when the service starts rather than during import.
     Base.metadata.create_all(bind=engine)
     yield
 
@@ -24,8 +24,12 @@ app.add_middleware(CorrelationLoggingMiddleware)
 
 
 @app.get("/health")
-def health():
-    return {"status": "ok", "service": "inventory-service"}
+def health(db: Session = Depends(get_db)):
+    try:
+        db.execute(text("SELECT 1"))
+    except SQLAlchemyError:
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    return {"status": "ok", "service": "inventory-service", "database": "ok"}
 
 
 @app.get("/products", response_model=list[schemas.ProductResponse])
@@ -64,19 +68,13 @@ def adjust_stock(
     product_id: int,
     payload: schemas.StockAdjustRequest,
     db: Session = Depends(get_db),
+    _service: None = Depends(require_service_token),
 ):
-    """Called by order-service to reserve (negative delta) or release (positive
-    delta, compensating action on saga failure) stock. Not gated behind admin auth
-    because it's an internal service-to-service call in this simplified setup —
-    in production this would sit behind network-level trust (VPC/service mesh)
-    or a service-to-service auth token, not end-user JWTs.
+    """Reserve or release stock for the order service.
 
-    Uses SELECT ... FOR UPDATE to take a row-level lock before reading the
-    current stock_quantity. Without this, two concurrent requests for the same
-    product could both read stock=5, both decide "10 available - 5 = fine",
-    and both commit — a classic lost-update race condition that would let you
-    oversell. The lock forces the second concurrent request to wait until the
-    first transaction commits, so it reads the *post-update* quantity."""
+    The row lock keeps concurrent updates for the same product from overwriting
+    each other.
+    """
     product = (
         db.query(models.Product)
         .filter(models.Product.id == product_id)

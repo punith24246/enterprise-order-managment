@@ -1,12 +1,4 @@
-"""
-Unit tests for the order saga (app/saga.py) -- the core "hard part" of Project 1.
-
-We don't spin up a real inventory-service here; instead we fake the httpx.Client
-so these tests run fast and in isolation, and assert on the two paths that
-matter most: (1) all items succeed -> order CONFIRMED, (2) one item fails
-partway through -> order FAILED and stock already reserved gets released.
-"""
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
 from app import models, saga
 
@@ -26,7 +18,6 @@ class FakeResponse:
 
 
 def make_fake_client(get_responses, post_responses):
-    """get_responses / post_responses: lists of FakeResponse consumed in order."""
     fake = MagicMock()
     fake.get.side_effect = get_responses
     fake.post.side_effect = post_responses
@@ -49,7 +40,7 @@ def test_saga_confirms_order_when_all_items_reserve_successfully(db_session):
 
     fake_client = make_fake_client(
         get_responses=[FakeResponse(200, {"id": 1, "price": "10.00", "stock_quantity": 5})],
-        post_responses=[FakeResponse(200, {"stock_quantity": 3})],  # reserve succeeds
+        post_responses=[FakeResponse(200, {"stock_quantity": 3})],
     )
 
     with patch("app.saga.httpx.Client", return_value=fake_client):
@@ -73,9 +64,9 @@ def test_saga_fails_and_releases_stock_when_second_item_has_insufficient_stock(d
             FakeResponse(200, {"id": 2, "price": "5.00", "stock_quantity": 3}),
         ],
         post_responses=[
-            FakeResponse(200, {"stock_quantity": 3}),   # reserve product 1: succeeds
-            FakeResponse(409, {}),                        # reserve product 2: insufficient stock
-            FakeResponse(200, {"stock_quantity": 5}),   # compensating release of product 1
+            FakeResponse(200, {"stock_quantity": 3}),
+            FakeResponse(409, {}),
+            FakeResponse(200, {"stock_quantity": 5}),
         ],
     )
 
@@ -84,5 +75,4 @@ def test_saga_fails_and_releases_stock_when_second_item_has_insufficient_stock(d
 
     assert result.status == models.OrderStatus.FAILED
     assert "product 2" in result.failure_reason
-    # 3 calls total: reserve(1), reserve(2) [fails], release(1) [compensation]
     assert fake_client.post.call_count == 3

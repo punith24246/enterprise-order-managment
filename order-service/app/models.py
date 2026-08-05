@@ -1,6 +1,8 @@
 import enum
-from sqlalchemy import Column, Integer, String, Numeric, ForeignKey, Enum, DateTime, func
+
+from sqlalchemy import Column, DateTime, Enum, ForeignKey, Integer, Numeric, String, func
 from sqlalchemy.orm import relationship
+
 from .database import Base
 
 
@@ -19,11 +21,6 @@ class Order(Base):
     total_amount = Column(Numeric(10, 2), nullable=False, default=0)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     failure_reason = Column(String, nullable=True)
-    # Client-supplied key (e.g. a UUID generated once per user action). If a
-    # request with the same key arrives again — network retry, double-click,
-    # at-least-once delivery from a queue — we return the original order
-    # instead of creating a duplicate. Unique + nullable so old rows / requests
-    # without a key aren't affected.
     idempotency_key = Column(String, unique=True, nullable=True, index=True)
 
     items = relationship("OrderItem", back_populates="order", cascade="all, delete-orphan")

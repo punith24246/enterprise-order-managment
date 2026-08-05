@@ -1,10 +1,11 @@
-import sys
 import os
+import sys
+
 import pytest
+from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
-from fastapi.testclient import TestClient
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -15,9 +16,6 @@ from app.main import app
 
 @pytest.fixture
 def client():
-    # StaticPool pins all connections to the same in-memory SQLite DB --
-    # without it, each checkout opens a fresh (empty) :memory: database and
-    # the tables created below would seem to vanish.
     engine = create_engine(
         "sqlite:///:memory:",
         connect_args={"check_same_thread": False},
@@ -33,9 +31,6 @@ def client():
         finally:
             db.close()
 
-    # Override auth so tests don't need a real JWT -- FastAPI's
-    # dependency_overrides swaps the dependency at the app level, unlike
-    # unittest.mock.patch which can't intercept an already-captured Depends().
     app.dependency_overrides[get_db] = override_get_db
     app.dependency_overrides[get_current_user] = lambda: {"role": "ADMIN", "sub": "1"}
     yield TestClient(app)

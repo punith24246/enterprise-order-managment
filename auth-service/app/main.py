@@ -1,4 +1,6 @@
-from fastapi import FastAPI, Depends, HTTPException, status
+from fastapi import Depends, FastAPI, HTTPException, status
+from sqlalchemy import text
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from . import models, schemas, auth_utils
@@ -19,8 +21,12 @@ app.add_middleware(CorrelationLoggingMiddleware)
 
 
 @app.get("/health")
-def health():
-    return {"status": "ok", "service": "auth-service"}
+def health(db: Session = Depends(get_db)):
+    try:
+        db.execute(text("SELECT 1"))
+    except SQLAlchemyError:
+        raise HTTPException(status_code=503, detail="Database unavailable")
+    return {"status": "ok", "service": "auth-service", "database": "ok"}
 
 
 @app.post("/auth/register", response_model=schemas.UserResponse, status_code=status.HTTP_201_CREATED)

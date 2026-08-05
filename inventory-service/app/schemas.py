@@ -2,10 +2,10 @@ from pydantic import BaseModel, Field
 
 
 class ProductCreate(BaseModel):
-    name: str
-    sku: str
-    price: float
-    stock_quantity: int = 0
+    name: str = Field(..., min_length=1, max_length=120)
+    sku: str = Field(..., min_length=1, max_length=64)
+    price: float = Field(..., gt=0, le=1_000_000)
+    stock_quantity: int = Field(default=0, ge=0, le=1_000_000)
 
 
 class ProductResponse(BaseModel):
@@ -20,10 +20,9 @@ class ProductResponse(BaseModel):
 
 
 class StockAdjustRequest(BaseModel):
-    # positive = restock, negative = deduct
-    delta: int = Field(..., description="Amount to add (positive) or remove (negative) from stock")
+    delta: int = Field(..., ge=-100_000, le=100_000)
 
 
 class StockCheckRequest(BaseModel):
-    product_id: int
-    quantity: int
+    product_id: int = Field(..., gt=0)
+    quantity: int = Field(..., gt=0, le=10_000)

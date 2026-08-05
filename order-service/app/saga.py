@@ -1,32 +1,14 @@
-"""
-Order creation saga.
+"""Order creation saga."""
 
-Why a saga instead of a distributed transaction (2PC)?
-Order-service and Inventory-service each own their own data and don't share a
-transaction manager. A two-phase commit would require both services to block on
-a coordinator and hold locks across a network call — fragile, and it doesn't
-scale well with more services. Instead we use an orchestrated saga:
-
-  1. Create the Order locally in PENDING state (order-service's own transaction).
-  2. For each item, call inventory-service to reserve stock (deduct quantity).
-  3. If ANY reservation step fails (insufficient stock, network error, etc.),
-     run compensating actions: release stock already reserved for the items that
-     succeeded before the failure, then mark the Order FAILED.
-  4. If all reservations succeed, mark the Order CONFIRMED.
-
-This trades strict atomicity for availability + eventual consistency: there's a
-brief window where stock is reserved in Inventory but the Order isn't confirmed
-yet. That's an acceptable tradeoff for this domain (order processing) — it would
-NOT be acceptable for something like a financial ledger, where you'd want a
-different consistency model entirely.
-"""
 import os
+
 import httpx
 from sqlalchemy.orm import Session
 
 from . import models
 
 INVENTORY_SERVICE_URL = os.getenv("INVENTORY_SERVICE_URL", "http://localhost:8002")
+INTERNAL_SERVICE_TOKEN = os.getenv("INTERNAL_SERVICE_TOKEN", "local-service-token")
 
 
 class SagaFailure(Exception):
@@ -55,26 +37,36 @@ def _reserve_stock(client: httpx.Client, product_id: int, quantity: int, headers
 
 
 def _release_stock(client: httpx.Client, product_id: int, quantity: int, headers: dict) -> None:
-    """Compensating action — best-effort restore of stock already reserved."""
+    """Best-effort release for stock reserved before a later saga failure."""
     try:
-        client.post(
+        resp = client.post(
             f"{INVENTORY_SERVICE_URL}/products/{product_id}/adjust-stock",
             json={"delta": quantity},
             headers=headers,
         )
+        resp.raise_for_status()
     except httpx.HTTPError:
-        # In production this would go to a dead-letter queue / retry job instead
-        # of being silently swallowed, since a failed compensation means stock
-        # is now inconsistent and needs manual or automated reconciliation.
+        # This should be retried or reconciled by a background process in a
+        # production system.
         pass
 
 
+def _inventory_headers(correlation_id: str | None) -> dict:
+    headers = {"x-service-token": INTERNAL_SERVICE_TOKEN}
+    if correlation_id:
+        headers["x-correlation-id"] = correlation_id
+    return headers
+
+
 def run_order_saga(
-    db: Session, order: models.Order, items_in: list[dict], correlation_id: str | None = None
+    db: Session,
+    order: models.Order,
+    items_in: list[dict],
+    correlation_id: str | None = None,
 ) -> models.Order:
-    reserved: list[tuple[int, int]] = []  # (product_id, quantity) successfully reserved so far
+    reserved: list[tuple[int, int]] = []
     total_amount = 0.0
-    headers = {"x-correlation-id": correlation_id} if correlation_id else {}
+    headers = _inventory_headers(correlation_id)
 
     with httpx.Client(timeout=5.0) as client:
         try:
@@ -85,20 +77,23 @@ def run_order_saga(
 
                 unit_price = float(product["price"])
                 total_amount += unit_price * item["quantity"]
-                db.add(models.OrderItem(
-                    order_id=order.id,
-                    product_id=item["product_id"],
-                    quantity=item["quantity"],
-                    unit_price=unit_price,
-                ))
+                db.add(
+                    models.OrderItem(
+                        order_id=order.id,
+                        product_id=item["product_id"],
+                        quantity=item["quantity"],
+                        unit_price=unit_price,
+                    )
+                )
 
         except (SagaFailure, httpx.HTTPError) as exc:
-            # Compensate everything reserved so far, in reverse order.
             for product_id, quantity in reversed(reserved):
                 _release_stock(client, product_id, quantity, headers)
 
             order.status = models.OrderStatus.FAILED
-            order.failure_reason = str(exc) if isinstance(exc, SagaFailure) else "Inventory service unavailable"
+            order.failure_reason = (
+                str(exc) if isinstance(exc, SagaFailure) else "Inventory service unavailable"
+            )
             db.commit()
             db.refresh(order)
             return order

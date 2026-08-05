@@ -35,6 +35,7 @@ services:
     environment:
       DATABASE_URL: postgresql://postgres:postgres@postgres:5432/enterprise_db
       JWT_SECRET: supersecretkey_change_me
+      INTERNAL_SERVICE_TOKEN: local-service-token
     depends_on:
       postgres:
         condition: service_healthy
@@ -47,6 +48,7 @@ services:
       DATABASE_URL: postgresql://postgres:postgres@postgres:5432/enterprise_db
       JWT_SECRET: supersecretkey_change_me
       INVENTORY_SERVICE_URL: http://inventory-service:8000
+      INTERNAL_SERVICE_TOKEN: local-service-token
     depends_on:
       postgres:
         condition: service_healthy
